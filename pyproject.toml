@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-field"
+description = "Resolution-independent procedural noise fields: Perlin, simplex, value and Worley as pure functions of normalised coordinates, with a probability-integral-transform coverage control, a fixed-pipeline remap, and a mask-driven compositor."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/jeremieLouvaert/ComfyUI-Field"
+
+[tool.comfy]
+PublisherId = "akurate"
+DisplayName = "ComfyUI Field"
+Icon = ""
