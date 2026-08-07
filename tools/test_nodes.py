@@ -111,7 +111,7 @@ def invariant_20():
 
 
 def invariant_21():
-    section("21. loader: pack registers exactly 3 nodes under AKURATE/Fields/*")
+    section("21. loader: pack registers exactly its expected node set under AKURATE/Fields/*")
     # Import the pack the way ComfyUI actually does: as a PACKAGE whose name is
     # the folder name, with the parent directory on sys.path. Loading __init__.py
     # under a synthetic module name via spec_from_file_location gives it no
@@ -124,18 +124,47 @@ def invariant_21():
         sys.path.insert(0, parent)
     mod = importlib.import_module(pkg_name)
     mappings = getattr(mod, "NODE_CLASS_MAPPINGS", {})
-    check("exactly 3 nodes registered", len(mappings) == 3,
-          "found " + str(len(mappings)) + ": " + str(list(mappings.keys())))
+    # Asserted as an explicit name -> category MAP, not a count. Updated
+    # 2026-08-07: the original "exactly 3 nodes" encoded a Phase-0-era fact and
+    # went stale the moment Phase 1 landed, reporting a failure that was really
+    # just an out-of-date expectation. A count also says nothing about WHICH
+    # node moved, and would not catch a node registering under the wrong family.
+    # This form fails with a set difference instead, so the next phase gets a
+    # readable diff rather than an off-by-N.
+    EXPECTED = {
+        "FieldNoise":      "AKURATE/Fields/Generate",   # Phase 0
+        "FieldRemap":      "AKURATE/Fields/Reshape",    # Phase 0
+        "FieldComposite":  "AKURATE/Fields/Combine",    # Phase 0
+        "FieldThreshold":  "AKURATE/Fields/Reshape",    # Phase 1 (a)
+        "FieldMorphology": "AKURATE/Fields/Refine",     # Phase 1 (a)
+        "FieldCombine":    "AKURATE/Fields/Combine",    # Phase 1 (a)
+        "FieldDistance":   "AKURATE/Fields/Reshape",    # Phase 1 (b)
+        "FieldFromImage":  "AKURATE/Fields/Derive",     # Phase 1 (c)
+        "FieldFromEdges":  "AKURATE/Fields/Derive",     # Phase 1 (c)
+        "FieldFromDetail": "AKURATE/Fields/Derive",     # Phase 1 (c)
+    }
+    got = {k: getattr(cls, "CATEGORY", "") for k, cls in mappings.items()}
 
-    expected = {"AKURATE/Fields/Generate", "AKURATE/Fields/Reshape", "AKURATE/Fields/Combine"}
-    cats, all_prefixed = set(), True
-    for _, cls in mappings.items():
-        cat = getattr(cls, "CATEGORY", "")
-        cats.add(cat)
-        all_prefixed = all_prefixed and cat.startswith("AKURATE/Fields/")
-    check("every registered node's CATEGORY starts with AKURATE/Fields/", all_prefixed, "categories=" + str(cats))
-    check("the three category families are exactly Generate/Reshape/Combine", cats == expected,
-          "categories=" + str(cats))
+    missing = sorted(set(EXPECTED) - set(got))
+    extra = sorted(set(got) - set(EXPECTED))
+    check("no expected node is missing", not missing, "missing=" + str(missing))
+    check("no unexpected node is registered", not extra, "extra=" + str(extra))
+
+    wrong = sorted(k for k in EXPECTED if k in got and got[k] != EXPECTED[k])
+    check("every node registers under its specified family", not wrong,
+          "wrong=" + str([(k, got[k], EXPECTED[k]) for k in wrong]))
+
+    all_prefixed = all(c.startswith("AKURATE/Fields/") for c in got.values())
+    check("every registered node's CATEGORY starts with AKURATE/Fields/", all_prefixed,
+          "categories=" + str(sorted(set(got.values()))))
+
+    # The `Field ` display prefix is a cross-cutting contract (procedural-plan.md
+    # section 3.3): typing "field" must surface the whole pack as one cluster.
+    # A class with no display-name entry silently shows its class name instead.
+    disp = getattr(mod, "NODE_DISPLAY_NAME_MAPPINGS", {})
+    named_ok = set(disp) == set(got) and all(v.startswith("Field ") for v in disp.values())
+    check("every node has a 'Field ' display name", named_ok,
+          "display=" + str(sorted(disp.values())))
 
 
 def run():
