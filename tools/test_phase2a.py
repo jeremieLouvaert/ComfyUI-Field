@@ -36,6 +36,7 @@ Run with the real embedded python, from the repo root:
 import os
 import sys
 import math
+import json
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
@@ -51,8 +52,32 @@ from nodes.field_gradient import FieldGradient
 from nodes.field_shape import FieldShape
 from nodes.field_tile import FieldTile
 from nodes.field_threshold import FieldThreshold  # Phase 1, shipped -- not blind-restricted, used only for D22's literal Threshold(hard,0.5) contract
+from utils import ramp as ramp_mod
 
 D64 = torch.float64
+
+
+# Phase 2c mechanical-rewrite helper (kwargs migration, radius/aspect ->
+# size_x/size_y and interpolation/steps -> ramp): builds a stepped-ramp JSON
+# string with n constant levels, the ramp-widget equivalent of the old
+# interpolation="stepped", steps=n.
+def stepped_ramp_json(n):
+    return json.dumps({
+        "version": 1,
+        "stops": [
+            {"p": k / n, "v": (k / (n - 1) if n > 1 else 0.0), "i": "constant"}
+            for k in range(n)
+        ],
+    })
+
+
+QUINTIC_RAMP_JSON = json.dumps({
+    "version": 1,
+    "stops": [
+        {"p": 0.0, "v": 0.0, "i": "smooth"},
+        {"p": 1.0, "v": 1.0, "i": "linear"},
+    ],
+})
 
 
 def run_safely(label, fn):
@@ -71,13 +96,13 @@ def run_safely(label, fn):
 
 GRADIENT_DEFAULTS = dict(
     mode="linear_u", center_x=0.5, center_y=0.5, rotation=0.0,
-    interpolation="linear", steps=4, repeat=1.0, mirror=False, phase=0.0,
+    ramp=ramp_mod.DEFAULT_RAMP_JSON, repeat=1.0, mirror=False, phase=0.0,
     aa_width=1.0, distribution="native", coverage=0.5, invert=False,
     width=512, height=512,
 )
 
 SHAPE_DEFAULTS = dict(
-    shape="circle", radius=0.25, aspect=1.0, rotation=0.0,
+    shape="circle", size_x=0.25, size_y=0.25, rotation=0.0,
     center_x=0.5, center_y=0.5, sides=5, star_ratio=0.5, corner_radius=0.0,
     falloff=0.0, aa_width=1.0, sdf_range=0.25,
     distribution="native", coverage=0.5, invert=False,
@@ -311,7 +336,7 @@ def row1_circle_isotropy():
     # no extra W/H conversion -- that is exactly the property bug B breaks.
     dims = [("1:1", 512, 512), ("16:9", 896, 504), ("9:16", 504, 896)]
     for label, W, H in dims:
-        mask, _, _ = sh(shape="circle", aspect=1.0, radius=0.25, aa_width=1.0, falloff=0.0,
+        mask, _, _ = sh(shape="circle", size_x=0.25, size_y=0.25, aa_width=1.0, falloff=0.0,
                          width=W, height=H)
         img = mask[0]
         # Amended per coordinator diagnosis at 1:1: an INTEGER ray origin
@@ -389,14 +414,20 @@ def row2a_containment():
         "mode": ["linear_u", "linear_v", "radial", "diamond", "box", "angular"],
         "center_x": [-1.0, -0.25, 0.0, 1.0, 2.0], "center_y": [-1.0, 0.7, 2.0],
         "rotation": [-360.0, -45.0, 45.0, 179.0, 360.0],
-        "interpolation": ["linear", "quintic", "stepped"], "steps": [2, 32],
+        # ramp replaces interpolation/steps (Phase 2c): sweep the same
+        # linear/quintic/stepped(n) space through the unified ramp widget.
+        "ramp": [ramp_mod.DEFAULT_RAMP_JSON, QUINTIC_RAMP_JSON,
+                 stepped_ramp_json(2), stepped_ramp_json(32)],
         "repeat": [1.0, 8.0, 32.0], "mirror": [True], "phase": [-2.0, 2.0],
         "aa_width": [0.0, 4.0], "distribution": ["uniform"], "coverage": [0.05, 0.95],
         "invert": [True],
     })
     sweep_check("Shape", sh, SHAPE_DEFAULTS, {
-        "shape": ["circle", "rect", "polygon", "star"], "radius": [0.01, 1.0],
-        "aspect": [0.25, 4.0], "rotation": [-360.0, 179.0],
+        "shape": ["circle", "rect", "polygon", "star"],
+        # size_y/size_x replace radius/aspect (Phase 2c): same swept values,
+        # size_y standing in for the old radius, size_x for the old aspect.
+        "size_y": [0.01, 1.0],
+        "size_x": [0.25, 4.0], "rotation": [-360.0, 179.0],
         "center_x": [-1.0, 2.0], "center_y": [-1.0, 2.0],
         "sides": [3, 12], "star_ratio": [0.1, 0.95], "corner_radius": [0.5],
         "falloff": [0.0, 1.0], "aa_width": [0.0, 4.0], "sdf_range": [0.001, 1.0],
@@ -437,7 +468,7 @@ def row2b_range_tightness():
     # corner enumeration), on-centre and off-centre.
     W = H = 512
     mask, _ = gr(mode="linear_u", center_x=0.5, center_y=0.5, rotation=0.0,
-                 interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                 repeat=1.0, mirror=False, phase=0.0,
                  distribution="native", coverage=0.5, width=W, height=H)
     row = mask[0, H // 2, :].double()
     got_min, got_max = float(row.min()), float(row.max())
@@ -451,7 +482,7 @@ def row2b_range_tightness():
     W2 = H2 = 512
     cx_frac = 0.75
     mask2, _ = gr(mode="linear_u", center_x=cx_frac, center_y=0.5, rotation=0.0,
-                  interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                  repeat=1.0, mirror=False, phase=0.0,
                   distribution="native", coverage=0.5, width=W2, height=H2)
     t_oracle, lo, hi, raw, x, y, S = linear_oracle("linear_u", cx_frac, 0.5, 0.0, H2, W2)
     max_abs_diff = float((mask2[0].double() - t_oracle).abs().max())
@@ -463,7 +494,7 @@ def row2b_range_tightness():
     for mode in ("radial", "diamond", "box"):
         for label, ccx, ccy in (("centred", 0.5, 0.5), ("off-centre", 0.2, 0.5)):
             mask3, _ = gr(mode=mode, center_x=ccx, center_y=ccy, rotation=0.0,
-                          interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                          repeat=1.0, mirror=False, phase=0.0,
                           distribution="native", coverage=0.5, width=512, height=512)
             t_oracle, lo, hi, raw, x, y, S, cx, cy = norm_oracle(mode, ccx, ccy, 512, 512)
             got = mask3[0].double()
@@ -500,7 +531,7 @@ def row4_contour_area():
     closed_form = math.pi * r * r  # window is 1x1 in S-units at square frames
     means = {}
     for S in (512, 1024, 2048):
-        mask, _, _ = sh(shape="circle", radius=r, aspect=1.0, aa_width=1.0, falloff=0.0,
+        mask, _, _ = sh(shape="circle", size_x=r, size_y=r, aa_width=1.0, falloff=0.0,
                         width=S, height=S)
         means[S] = float(mask[0].double().mean())
     spread = max(means.values()) - min(means.values())
@@ -516,7 +547,7 @@ def row4_contour_area():
     # style used by test_phase1's M3/M9.
     S = 1024
     r_biased = r + 0.5 / S
-    mask_b, _, _ = sh(shape="circle", radius=r_biased, aspect=1.0, aa_width=1.0, falloff=0.0,
+    mask_b, _, _ = sh(shape="circle", size_x=r_biased, size_y=r_biased, aa_width=1.0, falloff=0.0,
                       width=S, height=S)
     mean_b = float(mask_b[0].double().mean())
     control_a_passes = abs(mean_b - closed_form) <= 2e-5
@@ -533,7 +564,7 @@ def row4_contour_area():
     means_bug = {}
     for S in (512, 1024, 2048):
         r_frac = r_px_target / S
-        mask_pk, _, _ = sh(shape="circle", radius=r_frac, aspect=1.0, aa_width=1.0, falloff=0.0,
+        mask_pk, _, _ = sh(shape="circle", size_x=r_frac, size_y=r_frac, aa_width=1.0, falloff=0.0,
                            width=S, height=S)
         means_bug[S] = float(mask_pk[0].double().mean())
     spread_bug = max(means_bug.values()) - min(means_bug.values())
@@ -559,7 +590,7 @@ def row5_band_scales_with_s():
     predicted = 8.0 * r * aa
     band_over_s = {}
     for S in (512, 1024, 2048):
-        mask, _, _ = sh(shape="circle", radius=r, aspect=1.0, aa_width=aa, falloff=0.0,
+        mask, _, _ = sh(shape="circle", size_x=r, size_y=r, aa_width=aa, falloff=0.0,
                         width=S, height=S)
         m = mask[0].double()
         band_px = int(((m > 1e-6) & (m < 1.0 - 1e-6)).sum())
@@ -643,9 +674,9 @@ def row6_downsample_exact():
     CORNER_MARGIN_PX = 5.0
 
     # ---- circle ----
-    mask_hi_c, _, _ = sh(shape="circle", radius=0.25, aspect=1.0, rotation=0.0,
+    mask_hi_c, _, _ = sh(shape="circle", size_x=0.25, size_y=0.25, rotation=0.0,
                          width=S_hi, height=S_hi, aa_width=1.0, falloff=0.0)
-    mask_lo_c, _, _ = sh(shape="circle", radius=0.25, aspect=1.0, rotation=0.0,
+    mask_lo_c, _, _ = sh(shape="circle", size_x=0.25, size_y=0.25, rotation=0.0,
                          width=S_lo, height=S_lo, aa_width=1.0, falloff=0.0)
     diff_c = (box_downsample_2x(mask_hi_c[0].double()) - mask_lo_c[0].double()).abs()
     mean_c = float(diff_c.mean())
@@ -654,9 +685,9 @@ def row6_downsample_exact():
     check("circle: max|delta| <= 2e-3 (curvature residual)", max_c <= 2e-3, "measured=" + str(max_c))
 
     # ---- axis-aligned rect (half-extent 0.3, centre 0.5,0.5) ----
-    mask_hi_r, _, _ = sh(shape="rect", radius=0.3, aspect=1.0, rotation=0.0, corner_radius=0.0,
+    mask_hi_r, _, _ = sh(shape="rect", size_x=0.3, size_y=0.3, rotation=0.0, corner_radius=0.0,
                          width=S_hi, height=S_hi, aa_width=1.0, falloff=0.0)
-    mask_lo_r, _, _ = sh(shape="rect", radius=0.3, aspect=1.0, rotation=0.0, corner_radius=0.0,
+    mask_lo_r, _, _ = sh(shape="rect", size_x=0.3, size_y=0.3, rotation=0.0, corner_radius=0.0,
                          width=S_lo, height=S_lo, aa_width=1.0, falloff=0.0)
     diff_r = (box_downsample_2x(mask_hi_r[0].double()) - mask_lo_r[0].double()).abs()
     mean_r = float(diff_r.mean())
@@ -738,7 +769,7 @@ def row7_pixel_centre_convention():
     # frame mean is exactly 0.5 for ANY W, odd or even -- this IS the test.
     for W in (512, 513):
         mask, _ = gr(mode="linear_u", center_x=0.5, center_y=0.5, rotation=0.0,
-                     interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                     repeat=1.0, mirror=False, phase=0.0,
                      distribution="native", coverage=0.5, width=W, height=W)
         mean = float(mask[0].double().mean())
         check("W=" + str(W) + ": frame mean == 0.5 to 1e-6", abs(mean - 0.5) < 1e-6,
@@ -771,14 +802,14 @@ def row8_hard_edge_branch():
     # (b) NaN count == 0, across configs that are likely to hit d==0 exactly
     # (axis-aligned rect at a pixel-grid-aligned extent; checker at tiles
     # chosen to align cell edges to the S-unit grid).
-    mask, _, _ = sh(shape="rect", radius=0.25, aspect=1.0, rotation=0.0, corner_radius=0.0,
+    mask, _, _ = sh(shape="rect", size_x=0.25, size_y=0.25, rotation=0.0, corner_radius=0.0,
                     aa_width=0.0, falloff=0.0, width=256, height=256)
     only_binary = bool(((mask == 0.0) | (mask == 1.0)).all())
     no_nan = bool(torch.isfinite(mask).all())
     check("Shape rect aa_width=0: output only in {0,1}", only_binary)
     check("Shape rect aa_width=0: no NaN/Inf", no_nan)
 
-    mask_c, _, _ = sh(shape="circle", radius=0.25, aspect=1.0, aa_width=0.0, falloff=0.0,
+    mask_c, _, _ = sh(shape="circle", size_x=0.25, size_y=0.25, aa_width=0.0, falloff=0.0,
                       width=257, height=257)  # odd size -> a pixel centre can sit exactly on axis
     check("Shape circle aa_width=0: output only in {0,1}",
           bool(((mask_c == 0.0) | (mask_c == 1.0)).all()))
@@ -789,7 +820,7 @@ def row8_hard_edge_branch():
           bool(((mask_t == 0.0) | (mask_t == 1.0)).all()))
     check("Tile checker mortar=0 aa_width=0: no NaN/Inf", bool(torch.isfinite(mask_t).all()))
 
-    mask_g, _ = gr(mode="linear_u", interpolation="stepped", steps=4, aa_width=0.0, width=256, height=256)
+    mask_g, _ = gr(mode="linear_u", ramp=stepped_ramp_json(4), aa_width=0.0, width=256, height=256)
     check("Gradient stepped aa_width=0: no NaN/Inf", bool(torch.isfinite(mask_g).all()))
 
     # Negative control: the unguarded clamp(0.5 - d/0). Self-contained: build
@@ -818,7 +849,7 @@ def row9_identities_bitwise():
     W = H = 400
     for mode in ("linear_u", "linear_v"):
         mask, _ = gr(mode=mode, center_x=0.5, center_y=0.5, rotation=0.0,
-                     interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                     repeat=1.0, mirror=False, phase=0.0,
                      distribution="native", coverage=0.5, width=W, height=H)
         t_oracle, lo, hi, raw, x, y, S = linear_oracle(mode, 0.5, 0.5, 0.0, H, W)
         diff = float((mask[0].double() - t_oracle).abs().max())
@@ -827,7 +858,7 @@ def row9_identities_bitwise():
 
     for mode in ("radial", "diamond", "box"):
         mask, _ = gr(mode=mode, center_x=0.5, center_y=0.5, rotation=0.0,
-                     interpolation="linear", repeat=1.0, mirror=False, phase=0.0,
+                     repeat=1.0, mirror=False, phase=0.0,
                      distribution="native", coverage=0.5, width=W, height=H)
         t_oracle, lo, hi, raw, x, y, S, cx, cy = norm_oracle(mode, 0.5, 0.5, H, W)
         diff = float((mask[0].double() - t_oracle).abs().max())
@@ -1333,7 +1364,7 @@ def row14_generator_constraint():
         return None
 
     S_band = 1600
-    m_band, _ = gr(mode="linear_u", interpolation="stepped", steps=2, aa_width=4.0,
+    m_band, _ = gr(mode="linear_u", ramp=stepped_ramp_json(2), aa_width=4.0,
                    center_x=0.5, center_y=0.5, width=S_band, height=S_band)
     row_band = m_band[0, S_band // 2, :]
     near_j = int(0.5 * S_band - 0.5)
@@ -1360,7 +1391,15 @@ def row14_generator_constraint():
 def _widget_effect(fn, base, widget, value, out_index=0, atol=1e-6):
     o_base = fn(**base)[out_index]
     kw2 = dict(base)
-    kw2[widget] = value
+    # Phase 2c mechanical-rewrite note: `value` may be a dict of {kwarg:
+    # value} overrides instead of a single scalar -- needed where an old
+    # single widget (radius, which scaled size_x AND size_y together at a
+    # fixed aspect) now maps onto TWO new widgets (size_x, size_y). `widget`
+    # in that case is kept only as a human-readable label for the check name.
+    if isinstance(value, dict):
+        kw2.update(value)
+    else:
+        kw2[widget] = value
     o_mod = fn(**kw2)[out_index]
     changed = not torch.allclose(o_base.float(), o_mod.float(), atol=atol)
     return changed
@@ -1378,12 +1417,18 @@ def row15_applicability_matrix():
         ("center_x", dict(G, mode="radial"), 0.8),
         ("center_y", dict(G, mode="radial"), 0.8),
         ("rotation", dict(G, mode="diamond"), 45.0),
-        ("interpolation", dict(G), "quintic"),
-        ("steps", dict(G, interpolation="stepped"), 16),
+        # interpolation/steps replaced by the ramp widget (Phase 2c): the old
+        # "interpolation" active cell becomes a ramp-shape probe (linear ->
+        # quintic-equivalent smooth ramp); the old "steps" active cell
+        # becomes a ramp probe that changes the stepped ramp's stop count
+        # (4 -> 16 constant levels) against a stepped base, preserving the
+        # original "does the level count change output" intent.
+        ("ramp", dict(G), QUINTIC_RAMP_JSON),
+        ("ramp", dict(G, ramp=stepped_ramp_json(4)), stepped_ramp_json(16)),
         ("repeat", dict(G), 4.0),
         ("mirror", dict(G, repeat=4.0), True),
         ("phase", dict(G), 0.3),
-        ("aa_width", dict(G, interpolation="stepped"), 4.0),
+        ("aa_width", dict(G, ramp=stepped_ramp_json(4)), 4.0),
         ("aa_width", dict(G, repeat=4.0), 4.0),  # amended per section 8.1 pin: repeat>1 also makes wrap boundaries interior
         ("distribution", dict(G, mode="radial"), "uniform"),
         ("coverage", dict(G, mode="radial", distribution="uniform"), 0.8),
@@ -1391,9 +1436,16 @@ def row15_applicability_matrix():
     ]
     inactive_cases = [
         ("rotation", dict(G, mode="radial"), 45.0),   # L2 is rotation-invariant
-        ("steps", dict(G, interpolation="linear"), 16),
+        # NOTE (Phase 2c mechanical rewrite): the old inactive-cell row
+        # ("steps", dict(G, interpolation="linear"), 16) tested a widget
+        # ("steps") that no longer exists, paired with a config
+        # (interpolation="linear") that also no longer exists -- there is no
+        # non-arbitrary "steps"-shaped knob left to turn while staying on a
+        # linear (non-stepped) ramp, since ramp stops ARE the mechanism now.
+        # Removed as unambiguously obsolete rather than guessed at; see the
+        # final report.
         ("mirror", dict(G, repeat=1.0), True),
-        ("aa_width", dict(G, mode="radial", interpolation="linear", repeat=1.0), 4.0),
+        ("aa_width", dict(G, mode="radial", repeat=1.0), 4.0),
     ]
     for widget, base, val in active_cases:
         changed = _widget_effect(gr, base, widget, val)
@@ -1408,8 +1460,13 @@ def row15_applicability_matrix():
     Sh = SHAPE_DEFAULTS
     active_cases_s = [
         ("shape", dict(Sh), "rect"),
-        ("radius", dict(Sh), 0.4),
-        ("aspect", dict(Sh), 2.0),
+        # radius/aspect replaced by size_x/size_y (Phase 2c). At the default
+        # aspect (size_x==size_y==0.25), old radius scaled BOTH size_x and
+        # size_y together (exact identity: size_x=radius*aspect,
+        # size_y=radius) -- a two-key override, via the dict-value path in
+        # _widget_effect. Old aspect scaled size_x alone, radius fixed.
+        ("radius", dict(Sh), {"size_x": 0.4, "size_y": 0.4}),
+        ("aspect", dict(Sh), {"size_x": 0.5}),
         ("rotation", dict(Sh, shape="rect"), 30.0),
         ("center_x", dict(Sh), 0.7),
         ("center_y", dict(Sh), 0.7),
@@ -1420,7 +1477,7 @@ def row15_applicability_matrix():
         ("aa_width", dict(Sh, falloff=0.0), 4.0),
     ]
     inactive_cases_s = [
-        ("rotation", dict(Sh, shape="circle", aspect=1.0), 30.0),
+        ("rotation", dict(Sh, shape="circle"), 30.0),  # SHAPE_DEFAULTS already size_x==size_y (aspect=1.0 equivalent)
         ("sides", dict(Sh, shape="circle"), 10),
         ("star_ratio", dict(Sh, shape="circle"), 0.2),
         ("corner_radius", dict(Sh, shape="circle"), 0.3),
@@ -1509,7 +1566,7 @@ def row16_falloff_aa():
     # exact_box_coverage.
     W = H = 300
     r = 0.25
-    mask, _, _ = sh(shape="circle", radius=r, aspect=1.0, falloff=0.0, aa_width=1.0, width=W, height=H)
+    mask, _, _ = sh(shape="circle", size_x=r, size_y=r, falloff=0.0, aa_width=1.0, width=W, height=H)
     x, y, S = pixel_grid(H, W)
     cx, cy = centre_su(0.5, 0.5, W, H, S)
     dx, dy = x - cx, y - cy
@@ -1534,8 +1591,8 @@ def row16_falloff_aa():
     # 16b: falloff=20/S -> output independent of aa_width to 1e-6.
     Sref = 512
     falloff = 20.0 / Sref
-    m1, _, _ = sh(shape="circle", radius=r, falloff=falloff, aa_width=0.1, width=Sref, height=Sref)
-    m2, _, _ = sh(shape="circle", radius=r, falloff=falloff, aa_width=4.0, width=Sref, height=Sref)
+    m1, _, _ = sh(shape="circle", size_x=r, size_y=r, falloff=falloff, aa_width=0.1, width=Sref, height=Sref)
+    m2, _, _ = sh(shape="circle", size_x=r, size_y=r, falloff=falloff, aa_width=4.0, width=Sref, height=Sref)
     diff16b = float((m1[0].double() - m2[0].double()).abs().max())
     check("16b: falloff=20/S -> independent of aa_width to 1e-6", diff16b < 1e-6,
           "max abs diff=" + str(diff16b))
@@ -1566,7 +1623,7 @@ def row16_falloff_aa():
     W_eff_px = max(F2 * W2, aa2)
     QUINTIC_10_90_FACTOR = 0.468
     expected_band = QUINTIC_10_90_FACTOR * W_eff_px
-    mask3, _, _ = sh(shape="rect", radius=0.3, aspect=1.0, rotation=0.0, corner_radius=0.0,
+    mask3, _, _ = sh(shape="rect", size_x=0.3, size_y=0.3, rotation=0.0, corner_radius=0.0,
                      falloff=F2, aa_width=aa2, width=W2, height=H2)
     row = mask3[0, H2 // 2, :]
     # find the 0->1 rising edge on the left side of the rect and measure its
@@ -1619,7 +1676,19 @@ def row17_geometry_identity():
     # a robust discrete stand-in for "n lobes": the sweep must cross its own
     # midline exactly 2*sides times (once up, once down, per vertex).
     for sides in (5, 6, 8):
-        mask, _, _ = sh(shape="polygon", sides=sides, radius=0.3, aspect=1.0,
+        # 2c rename, normalisation-aware (spec 2c section 1.1): equal typed
+        # sizes now mean equal DRAWN bbox, which stretches any n-gon whose
+        # natural bbox is non-square (pentagon ex=1/ey=0.951, hexagon
+        # ex=0.866/ey=1). This row asserts REGULAR-polygon closed forms, so
+        # it must ask for the regular shape explicitly: size = r * unit bbox
+        # half-extents, computed from the spec's own vertex closed form
+        # (outer vertices at pi/sides + 2*pi*k/sides).
+        r_circ = 0.3
+        thetas = [math.pi / sides + 2.0 * math.pi * k / sides for k in range(sides)]
+        ex_unit = max(abs(math.cos(t)) for t in thetas)
+        ey_unit = max(abs(math.sin(t)) for t in thetas)
+        mask, _, _ = sh(shape="polygon", sides=sides,
+                        size_x=r_circ * ex_unit, size_y=r_circ * ey_unit,
                         falloff=0.0, aa_width=1.0, width=W, height=H)
         radii = sweep_radii(mask[0], cy, cx, r_max, n_angles=1440)
         vals = [r for r in radii if r is not None]
@@ -1649,7 +1718,7 @@ def row17_geometry_identity():
     # a star's sharp inner notches give clean, well-separated local maxima
     # unlike a polygon's flat edge midpoints).
     for sides in (5, 6):
-        mask, _, _ = sh(shape="star", sides=sides, radius=0.3, aspect=1.0,
+        mask, _, _ = sh(shape="star", sides=sides, size_x=0.3, size_y=0.3,
                         falloff=0.0, aa_width=1.0, width=W, height=H)
         radii = sweep_radii(mask[0], cy, cx, r_max, n_angles=1440)
         n = len(radii)
@@ -1666,7 +1735,7 @@ def row17_geometry_identity():
 
     # star_ratio via measured inner/outer radius.
     for star_ratio in (0.3, 0.6):
-        mask, _, _ = sh(shape="star", sides=5, star_ratio=star_ratio, radius=0.3, aspect=1.0,
+        mask, _, _ = sh(shape="star", sides=5, star_ratio=star_ratio, size_x=0.3, size_y=0.3,
                         falloff=0.0, aa_width=1.0, width=W, height=H)
         radii = sweep_radii(mask[0], cy, cx, r_max, n_angles=1440)
         vals = [r for r in radii if r is not None]
@@ -2011,9 +2080,9 @@ def row21_forced_native_note():
     check("Tile profile=flat,jitter_value=0 + uniform requested: a note is printed",
           len(out2.strip()) > 0, "captured=" + repr(out2[:200]))
 
-    _, out3 = capture_stdout(lambda: gr(mode="linear_u", interpolation="stepped",
+    _, out3 = capture_stdout(lambda: gr(mode="linear_u", ramp=stepped_ramp_json(4),
                                         distribution="uniform", coverage=0.5, width=200, height=200))
-    check("Gradient interpolation=stepped + uniform requested: a note is printed",
+    check("Gradient ramp=stepped + uniform requested: a note is printed",
           len(out3.strip()) > 0, "captured=" + repr(out3[:200]))
 
     # Uniform honoured otherwise: a non-binary config with uniform requested
@@ -2029,7 +2098,7 @@ def row21_forced_native_note():
     # without a note). Self-contained: capture stdout for the SAME stepped
     # config and check for absence of a note -- this must NOT pass (i.e. the
     # note must be present), proving the printed-note check has teeth.
-    _, out5 = capture_stdout(lambda: gr(mode="linear_u", interpolation="stepped",
+    _, out5 = capture_stdout(lambda: gr(mode="linear_u", ramp=stepped_ramp_json(4),
                                         distribution="uniform", coverage=0.5, width=200, height=200))
     control_passes = len(out5.strip()) == 0  # "silently" = no note printed
     nc("21: silently PIT a stepped gradient (no note) vs the real node's actual stdout",
@@ -2066,7 +2135,7 @@ def row22_sdf_convention():
     # -d > 0 <=> d < 0, with the d==0 boundary landing on 0 in both (mask's
     # strict '<', threshold's strict '>' on exactly 0.5) -- so torch.equal
     # holds on a correct build.
-    mask, _, sdf = sh(shape="circle", radius=0.25, aa_width=0.0, falloff=0.0,
+    mask, _, sdf = sh(shape="circle", size_x=0.25, size_y=0.25, aa_width=0.0, falloff=0.0,
                       sdf_range=0.25, width=300, height=300)
     recovered = th(sdf, mode="hard", threshold_by="level", threshold=0.5)
     same = torch.equal(mask, recovered)

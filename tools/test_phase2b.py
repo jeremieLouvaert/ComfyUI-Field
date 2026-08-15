@@ -1262,7 +1262,7 @@ def rowS3_cross_node_oracle():
                             position_jitter=0.0, size_jitter=0.0, value_jitter=0.0, rotation_jitter=0.0,
                             aa_width=1.0, width=W, height=H)[0].double()
             shape_mask, _, _ = FieldShape().execute(
-                shape="circle", radius=size, aspect=1.0, rotation=0.0, center_x=0.5, center_y=0.5,
+                shape="circle", size_x=size, size_y=size, rotation=0.0, center_x=0.5, center_y=0.5,
                 sides=5, star_ratio=0.5, corner_radius=0.0, falloff=falloff, aa_width=1.0, sdf_range=0.25,
                 distribution="native", coverage=0.5, invert=False, width=W, height=H)
             diff = float((mask - shape_mask[0].double()).abs().max())
@@ -1277,7 +1277,7 @@ def rowS3_cross_node_oracle():
                     aa_width=1.0, width=W, height=H)[0].double()
     nudge_su = 0.5 / max(H, W)
     shape_mask_nudged, _, _ = FieldShape().execute(
-        shape="circle", radius=size, aspect=1.0, rotation=0.0, center_x=0.5 + nudge_su, center_y=0.5,
+        shape="circle", size_x=size, size_y=size, rotation=0.0, center_x=0.5 + nudge_su, center_y=0.5,
         sides=5, star_ratio=0.5, corner_radius=0.0, falloff=0.0, aa_width=1.0, sdf_range=0.25,
         distribution="native", coverage=0.5, invert=False, width=W, height=H)
     diff_nudged = float((mask - shape_mask_nudged[0].double()).abs().max())
@@ -1455,7 +1455,7 @@ def rowS5b_combine_mode():
         cx_frac = (float(grid_ix[k]) + 0.5) / cells_x  # allowed to be <0 or >1 for halo cells
         cy_frac = (float(grid_iy[k]) + 0.5) / cells_y
         shp_mask, _, _ = FieldShape().execute(
-            shape="circle", radius=r_su, aspect=1.0, rotation=0.0, center_x=cx_frac, center_y=cy_frac,
+            shape="circle", size_x=r_su, size_y=r_su, rotation=0.0, center_x=cx_frac, center_y=cy_frac,
             sides=5, star_ratio=0.5, corner_radius=0.0, falloff=0.0, aa_width=1.0, sdf_range=0.25,
             distribution="native", coverage=0.5, invert=False, width=W, height=H)
         cov_list.append(shp_mask[0].double())

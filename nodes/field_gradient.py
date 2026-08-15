@@ -14,12 +14,12 @@ import torch
 try:
     from ..utils import coords2d
     from ..utils import raster2d
-    from ..utils.shaping import quintic
+    from ..utils import ramp as ramp_mod
     from ..utils.distribution import build_lut, apply_pit, coverage_shift
 except ImportError:
     from utils import coords2d
     from utils import raster2d
-    from utils.shaping import quintic
+    from utils import ramp as ramp_mod
     from utils.distribution import build_lut, apply_pit, coverage_shift
 
 
@@ -133,33 +133,23 @@ def _field(px, py, S, win_w, win_h, p):
     else:
         t2 = torch.remainder(t1, 1.0)
 
-    interp = p["interpolation"]
-    steps = p["steps"]
-    if interp == "linear":
-        out = t2
-    elif interp == "quintic":
-        out = quintic(t2)
-    else:  # stepped
-        lvl = t2 * steps
-        idx = torch.clamp(torch.floor(lvl), max=float(steps - 1))
-        out = idx / float(steps - 1)
+    # Phase 2c spec 2.1-2.3: interpolation/steps are gone, replaced by the
+    # stops ramp. Base evaluation (the pure per-segment formula), then the
+    # jump blend (nearest-jump gather non-mirror; the two-pass period-2
+    # construction under mirror), both against the PRECOMPUTED (CPU-scalar)
+    # one-sided limits/jump set -- never recomputed per pixel.
+    p_t, v_t, i_t = p["ramp_stop_tensors"]
+    out = ramp_mod.eval_ramp(t2, p_t, v_t, i_t)
 
     w_pixel = p["aa_width"] / S
     dt1_dp = repeat * grad_norm / span
 
-    if interp == "stepped" and steps >= 2:
-        lvl = t2 * steps
-        k = torch.round(lvl)
-        idx_below = torch.clamp(k - 1.0, 0.0, float(steps - 1))
-        idx_above = torch.clamp(k, 0.0, float(steps - 1))
-        level_below = idx_below / float(steps - 1)
-        level_above = idx_above / float(steps - 1)
-        dlvl_dp = steps * dt1_dp
-        local2 = lvl - k
-        w_t1_2 = w_pixel * dlvl_dp
-        in_band2 = torch.abs(local2) < (w_t1_2 / 2.0)
-        blended2 = raster2d.blend_seam(lvl, level_below, level_above, dlvl_dp, w_pixel)
-        out = torch.where(in_band2, blended2, out)
+    jump_p, jump_L, jump_R = p["ramp_jump_tensors"]
+    if jump_p.shape[0] > 0:
+        if mirror:
+            out = ramp_mod.blend_jumps_mirror(out, t1, t2, jump_p, jump_L, jump_R, dt1_dp, w_pixel)
+        else:
+            out = ramp_mod.blend_jumps_nonmirror(out, t2, jump_p, jump_L, jump_R, dt1_dp, w_pixel)
 
     if not mirror:
         # FIX 3 (spec 3.1 pin): the limit-blend applies only where a wrap
@@ -179,11 +169,17 @@ def _field(px, py, S, win_w, win_h, p):
             A = s * repeat + phase
             has_interior = (repeat > 1.0 + 1e-9) or (abs(A - round(A)) > 1e-9)
 
-        if has_interior:
+        # Phase 2c spec 2.3: the wrap seam's limits generalise from the old
+        # hard (1.0, 0.0) to the ramp's own one-sided closed forms
+        # (ramp(1-), ramp(0+)), gated ADDITIONALLY on the two differing --
+        # a tent ramp (ramp(1-) == ramp(0+)) has no real seam and must not
+        # get a flat spot blended in (v1 measured 0.023 without this gate).
+        ramp1_minus, ramp0_plus = p["ramp_wrap_limits"]
+        if has_interior and ramp1_minus != ramp0_plus:
             local = t1 - torch.round(t1)
             w_t1 = w_pixel * dt1_dp
             in_band = torch.abs(local) < (w_t1 / 2.0)
-            blended = raster2d.blend_seam(t1, 1.0, 0.0, dt1_dp, w_pixel)
+            blended = raster2d.blend_seam(t1, ramp1_minus, ramp0_plus, dt1_dp, w_pixel)
             out = torch.where(in_band, blended, out)
 
     return out
@@ -209,11 +205,12 @@ class FieldGradient:
                     "default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0,
                     "tooltip": "Degrees, counter-clockwise. No effect on radial (rotation-invariant)"
                 }),
-                "interpolation": (["linear", "quintic", "stepped"], {
-                    "default": "linear", "tooltip": "Curve applied after repeat/wrap"
+                "ramp": ("STRING", {
+                    "default": ramp_mod.DEFAULT_RAMP_JSON, "multiline": True,
+                    "tooltip": "Stops ramp: {\"version\":1,\"stops\":[{\"p\":,\"v\":,\"i\":}]}, "
+                               "i in constant/linear/smooth. Edit via the canvas widget or paste "
+                               "JSON directly (docs/field-phase2c-derivation.md 2.5)"
                 }),
-                "steps": ("INT", {"default": 4, "min": 2, "max": 32, "step": 1,
-                                   "tooltip": "Level count, stepped only"}),
                 "repeat": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 32.0, "step": 0.1,
                                       "tooltip": "Tiling repeats across the declared range"}),
                 "mirror": ("BOOLEAN", {"default": False,
@@ -221,7 +218,9 @@ class FieldGradient:
                 "phase": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0, "step": 0.01,
                                      "tooltip": "Slides the ramp before wrapping"}),
                 "aa_width": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
-                                        "tooltip": "Antialias width, pixels, for wrap/step/angular-seam edges"}),
+                                        "tooltip": "Antialias width, pixels. Active when repeat>1, phase!=0, "
+                                                   "centre!=default, mode=angular, or the ramp has a value "
+                                                   "discontinuity interior to the achieved range"}),
                 "distribution": (["native", "uniform"], {
                     "default": "native",
                     "tooltip": "native: field's own declared range. uniform: probe-grid PIT, exact coverage"
@@ -243,7 +242,7 @@ class FieldGradient:
     FUNCTION = "execute"
     CATEGORY = "AKURATE/Fields/Generate"
 
-    def execute(self, mode, center_x, center_y, rotation, interpolation, steps,
+    def execute(self, mode, center_x, center_y, rotation, ramp,
                 repeat, mirror, phase, aa_width, distribution, coverage, invert,
                 width, height, reference_image=None, reference_mask=None):
 
@@ -263,17 +262,25 @@ class FieldGradient:
         S, win_w, win_h = coords2d.window(H, W)
         cx, cy = coords2d.centre_su(center_x, center_y, H, W)
 
+        # Phase 2c spec 2.5: parse + validate once (CPU, pure Python), then
+        # build the small per-stop / per-jump tensors once at the resolved
+        # device -- reused for both the probe pass and the output pass.
+        stops = ramp_mod.parse_ramp(ramp)
+        ramp0_plus, ramp1_minus, jumps = ramp_mod.compute_limits(stops)
+        stop_tensors = ramp_mod.build_stop_tensors(stops, device)
+        jump_tensors = ramp_mod.build_jump_tensors(jumps, device)
+
         params = {
             "mode": mode, "cx": cx, "cy": cy, "rotation": rotation,
-            "interpolation": interpolation, "steps": steps, "repeat": repeat,
-            "mirror": mirror, "phase": phase, "aa_width": aa_width,
+            "repeat": repeat, "mirror": mirror, "phase": phase, "aa_width": aa_width,
+            "ramp_stop_tensors": stop_tensors, "ramp_jump_tensors": jump_tensors,
+            "ramp_wrap_limits": (ramp1_minus, ramp0_plus),
         }
 
-        forced_native = (interpolation == "stepped")
+        forced_native = ramp_mod.is_finitely_many_values(stops)
         eff_distribution = distribution
         if forced_native and distribution == "uniform":
-            print("[FieldGradient] interpolation=stepped is provably two-valued per "
-                  "level, forcing distribution=native")
+            print("[FieldGradient] ramp takes finitely many values, forcing distribution=native")
             eff_distribution = "native"
 
         if eff_distribution == "uniform":

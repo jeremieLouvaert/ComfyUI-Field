@@ -6,6 +6,7 @@ Spec: docs/field-phase2a-derivation.md, sections 4, 8.2.
 A generator: elementwise ops and gathers only.
 """
 
+import math
 import torch
 
 try:
@@ -23,6 +24,33 @@ except ImportError:
 SHAPES = ["circle", "rect", "polygon", "star"]
 
 
+def _unit_bbox_half_extents(shape, sides, star_ratio_eff):
+    """Phase 2c spec 1.1: the UNIT shape's (r=1) bbox half-extents at
+    rotation 0, from BOTH vertex sets of the shipped fold construction.
+    circle -> (1,1) (the mapping reduces to a pure relabel). rect -> (1,1)
+    (native, no scaling -- 2a 4.4). polygon/star: outer vertices at
+    theta_k = pi/n + 2*pi*k/n; star inner vertices at theta_k + pi/n, radius
+    star_ratio_eff (the CLAMPED, achievable ratio -- what invert_star_ratio
+    actually draws, not the raw widget value). Computed once per execute,
+    CPU scalars (n<=12, a Python loop, never per-pixel)."""
+    if shape in ("circle", "rect"):
+        return 1.0, 1.0
+    n = sides
+    ex = 0.0
+    ey = 0.0
+    for k in range(n):
+        theta = math.pi / n + 2.0 * math.pi * k / n
+        ex = max(ex, abs(math.cos(theta)))
+        ey = max(ey, abs(math.sin(theta)))
+    if shape == "star":
+        rho = star_ratio_eff
+        for k in range(n):
+            theta_in = math.pi / n + 2.0 * math.pi * k / n + math.pi / n
+            ex = max(ex, rho * abs(math.cos(theta_in)))
+            ey = max(ey, rho * abs(math.sin(theta_in)))
+    return ex, ey
+
+
 def _sdf(px, py, S, win_w, win_h, p):
     """Stage 1/2 of the pipeline (spec 4): centre, rotate, build the exact
     SDF and its analytic unit normal for the selected shape. Returns (d, nx, ny)."""
@@ -33,13 +61,15 @@ def _sdf(px, py, S, win_w, win_h, p):
     radius = p["radius"]
     aspect = p["aspect"]
 
-    # FIX 4 (house early-out precedent, Phase 1 0.4): rotation is
-    # mathematically inert for a round circle (aspect=1), but applying the
+    # FIX 4 (house early-out precedent, Phase 1 0.4; Phase 2c spec 1.1
+    # restates the condition in size_x/size_y terms -- MEASURED equivalent
+    # to aspect==1.0 over the full widget grid, adv-geo CONFIRMED-B):
+    # rotation is mathematically inert for a round circle, but applying the
     # transform anyway leaves ULP noise that makes a matrix-inactive widget
     # move the output. coords2d.rotate already early-outs bitwise at
-    # rotation=0.0 for every shape; this adds the circle+aspect=1 case,
-    # where rotation is inert at ANY angle.
-    rot_applied = not (shape == "circle" and aspect == 1.0)
+    # rotation=0.0 for every shape; this adds the circle+size_x==size_y
+    # case, where rotation is inert at ANY angle.
+    rot_applied = not (shape == "circle" and p["size_x"] == p["size_y"])
     if rot_applied:
         dx, dy = coords2d.rotate(dx, dy, p["rotation"])
 
@@ -79,15 +109,22 @@ class FieldShape:
         return {
             "required": {
                 "shape": (SHAPES, {"default": "circle"}),
-                "radius": ("FLOAT", {
-                    "default": 0.25, "min": 0.01, "max": 1.0, "step": 0.005,
-                    "tooltip": "Circumradius (rect: half-height)"
+                "size_x": ("FLOAT", {
+                    "default": 0.25, "min": 0.01, "max": 2.0, "step": 0.005,
+                    "tooltip": "Drawn half-extent along x before rotation, fraction of frame S. "
+                               "Soft falloff and the sdf output are approximate on strongly "
+                               "elongated shapes (docs/field-phase2c-derivation.md 1.2)"
                 }),
-                "aspect": ("FLOAT", {
-                    "default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05,
-                    "tooltip": "Coordinate scaling, not per-axis radii. Rect: native half-width = radius*aspect"
+                "size_y": ("FLOAT", {
+                    "default": 0.25, "min": 0.01, "max": 2.0, "step": 0.005,
+                    "tooltip": "Drawn half-extent along y before rotation, fraction of frame S. "
+                               "Soft falloff and the sdf output are approximate on strongly "
+                               "elongated shapes (docs/field-phase2c-derivation.md 1.2)"
                 }),
-                "rotation": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0}),
+                "rotation": ("FLOAT", {
+                    "default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0,
+                    "tooltip": "Degrees, counter-clockwise. Inert for a round circle (size_x == size_y)"
+                }),
                 "center_x": ("FLOAT", {"default": 0.5, "min": -1.0, "max": 2.0, "step": 0.01}),
                 "center_y": ("FLOAT", {"default": 0.5, "min": -1.0, "max": 2.0, "step": 0.01}),
                 "sides": ("INT", {"default": 5, "min": 3, "max": 12, "step": 1,
@@ -122,7 +159,7 @@ class FieldShape:
     FUNCTION = "execute"
     CATEGORY = "AKURATE/Fields/Generate"
 
-    def execute(self, shape, radius, aspect, rotation, center_x, center_y, sides,
+    def execute(self, shape, size_x, size_y, rotation, center_x, center_y, sides,
                 star_ratio, corner_radius, falloff, aa_width, sdf_range,
                 distribution, coverage, invert, width, height,
                 reference_image=None, reference_mask=None):
@@ -144,12 +181,23 @@ class FieldShape:
         cx, cy = coords2d.centre_su(center_x, center_y, H, W)
 
         m_val = 2.0
+        eff_star_ratio = star_ratio
         if shape == "star":
-            m_val, _eff_ratio = sdf2d.invert_star_ratio(sides, star_ratio)
+            m_val, eff_star_ratio = sdf2d.invert_star_ratio(sides, star_ratio)
+
+        # Phase 2c spec 1.1: size_x/size_y -> radius/aspect, closed form from
+        # the unit shape's own bbox half-extents (BOTH vertex sets for
+        # polygon/star). One coordinate transform, one radius inside every
+        # SDF (2a 1.3) -- size_x/size_y relabels (radius*aspect, radius); it
+        # never becomes two radii in an SDF.
+        ex_unit, ey_unit = _unit_bbox_half_extents(shape, sides, eff_star_ratio)
+        radius = size_y / ey_unit
+        aspect = (size_x * ey_unit) / (size_y * ex_unit)
 
         params = {
             "shape": shape, "radius": radius, "aspect": aspect, "rotation": rotation,
             "cx": cx, "cy": cy, "sides": sides, "m": m_val, "corner_radius": corner_radius,
+            "size_x": size_x, "size_y": size_y,
         }
 
         forced_native = (falloff == 0.0)

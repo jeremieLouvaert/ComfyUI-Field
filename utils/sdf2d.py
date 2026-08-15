@@ -158,7 +158,11 @@ def sdf_star_polygon(px, py, n_sides, m, r):
     for star mode, or passed as 2.0 for polygon mode).
 
     Reference-vertex convention (silent choice, recorded): angle measured via
-    atan2(y, x) from the +x axis, so at rotation=0 a vertex points east. This
+    atan2(y, x) from the +x axis. At rotation=0 there is no vertex "along
+    x" -- the fold places an EDGE MIDPOINT (polygon, m=2) / INNER VERTEX
+    (star, 2<m<n) on +x instead (corrected 2026-08-15, Phase 2c spec 1.1;
+    adv-geo defect 6/21 -- the outer vertices sit at theta_k = pi/n +
+    2*pi*k/n, straddling +x symmetrically rather than landing on it). This
     is an arbitrary but self-consistent choice -- the node's own `rotation`
     widget controls final orientation regardless.
 
