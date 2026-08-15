@@ -185,7 +185,12 @@ def sdf_star_polygon(px, py, n_sides, m, r):
 
     Rseg = r * acs_y / ecs_y
     t_raw = -(q_x * ecs_x + q_y * ecs_y)
-    t = torch.clamp(t_raw, 0.0, Rseg)
+    # 2026-08-15 (Phase 2b adversarial pass): r may be a PER-PIXEL tensor
+    # (Field Scatter's per-cell sizes), which makes Rseg a tensor and
+    # torch.clamp(t, 0.0, Rseg) a TypeError. as_tensor + minimum handles the
+    # scalar and tensor cases identically; bit-identical for scalar r.
+    Rseg_t = torch.as_tensor(Rseg, dtype=t_raw.dtype, device=t_raw.device)
+    t = torch.minimum(torch.clamp(t_raw, min=0.0), Rseg_t)
     p3x = q_x + t * ecs_x
     p3y = q_y + t * ecs_y
 

@@ -39,25 +39,36 @@ def _sdf(px, py, S, win_w, win_h, p):
     # move the output. coords2d.rotate already early-outs bitwise at
     # rotation=0.0 for every shape; this adds the circle+aspect=1 case,
     # where rotation is inert at ANY angle.
-    if not (shape == "circle" and aspect == 1.0):
+    rot_applied = not (shape == "circle" and aspect == 1.0)
+    if rot_applied:
         dx, dy = coords2d.rotate(dx, dy, p["rotation"])
 
     if shape == "rect":
         hx = radius * aspect
         hy = radius
-        return sdf2d.sdf_rect_rounded(dx, dy, hx, hy, p["corner_radius"])
+        d, nx, ny = sdf2d.sdf_rect_rounded(dx, dy, hx, hy, p["corner_radius"])
+    else:
+        sx = dx / aspect
+        sy = dy
+        if shape == "circle":
+            d, nx, ny = sdf2d.sdf_circle(sx, sy, radius)
+        elif shape == "polygon":
+            d, nx, ny = sdf2d.sdf_star_polygon(sx, sy, p["sides"], 2.0, radius)
+        else:  # star
+            d, nx, ny = sdf2d.sdf_star_polygon(sx, sy, p["sides"], p["m"], radius)
+        d, nx, ny = sdf2d.aspect_correct(d, nx, ny, aspect)
 
-    sx = dx / aspect
-    sy = dy
+    # 2026-08-15 (Phase 2b adversarial pass, defect in shipped 2a code): the
+    # SDF's normal lives in the ROTATED frame, but raster2d.coverage projects
+    # the AXIS-ALIGNED pixel footprint onto it, so the normal must come back
+    # to pixel space first. Without this, a shape rotated 45 degrees carried
+    # the full 2a 6.1 axis-vs-diagonal anisotropy (measured 0.0424 coverage
+    # error) in its AA band, and rotation read as live on a circle through
+    # ULP noise. coords2d.unrotate existed for exactly this and was dead code.
+    if rot_applied:
+        nx, ny = coords2d.unrotate(nx, ny, p["rotation"])
 
-    if shape == "circle":
-        d, nx, ny = sdf2d.sdf_circle(sx, sy, radius)
-    elif shape == "polygon":
-        d, nx, ny = sdf2d.sdf_star_polygon(sx, sy, p["sides"], 2.0, radius)
-    else:  # star
-        d, nx, ny = sdf2d.sdf_star_polygon(sx, sy, p["sides"], p["m"], radius)
-
-    return sdf2d.aspect_correct(d, nx, ny, aspect)
+    return d, nx, ny
 
 
 class FieldShape:
