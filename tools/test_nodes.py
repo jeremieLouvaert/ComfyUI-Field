@@ -142,6 +142,9 @@ def invariant_21():
         "FieldFromImage":  "AKURATE/Fields/Derive",     # Phase 1 (c)
         "FieldFromEdges":  "AKURATE/Fields/Derive",     # Phase 1 (c)
         "FieldFromDetail": "AKURATE/Fields/Derive",     # Phase 1 (c)
+        "FieldGradient":   "AKURATE/Fields/Generate",   # Phase 2a
+        "FieldShape":      "AKURATE/Fields/Generate",   # Phase 2a
+        "FieldTile":       "AKURATE/Fields/Generate",   # Phase 2a
     }
     got = {k: getattr(cls, "CATEGORY", "") for k, cls in mappings.items()}
 

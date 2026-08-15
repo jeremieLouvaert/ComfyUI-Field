@@ -8,6 +8,9 @@ from .field_distance import FieldDistance
 from .field_from_image import FieldFromImage
 from .field_from_edges import FieldFromEdges
 from .field_from_detail import FieldFromDetail
+from .field_gradient import FieldGradient
+from .field_shape import FieldShape
+from .field_tile import FieldTile
 
 NODE_CLASS_MAPPINGS = {
     # Phase 0
@@ -24,6 +27,10 @@ NODE_CLASS_MAPPINGS = {
     "FieldFromImage": FieldFromImage,
     "FieldFromEdges": FieldFromEdges,
     "FieldFromDetail": FieldFromDetail,
+    # Phase 2a, analytic generators
+    "FieldGradient": FieldGradient,
+    "FieldShape": FieldShape,
+    "FieldTile": FieldTile,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -37,4 +44,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FieldFromImage": "Field From Image",
     "FieldFromEdges": "Field From Edges",
     "FieldFromDetail": "Field From Detail",
+    "FieldGradient": "Field Gradient",
+    "FieldShape": "Field Shape",
+    "FieldTile": "Field Tile",
 }

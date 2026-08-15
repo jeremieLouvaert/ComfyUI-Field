@@ -136,6 +136,22 @@ def _build_oct_off(seed: int) -> list:
     return out
 
 
+def cell_hash4(P, ix, iy):
+    """Field Phase 2a spec 5.3: the public per-cell hash, added here without
+    touching anything existing. h = P[P[ix&4095]+(iy&4095)]; h_k = P[h+k] for
+    channel k in {0,1,2,3} (size, offset_x, offset_y, value); u_k = h_k/4096.
+
+    ix, iy: int64 tensors, any shape, already the (possibly shifted, per
+    pattern) cell index. P: the doubled 8192-entry permutation from
+    build_tables(). h <= 4095 and k <= 3, so P[h+k] is always in range with
+    no second mask (spec 5.3). Returns (u0, u1, u2, u3), float32 tensors
+    uniform in [0, 1)."""
+    xi = ix & (TABLE_N - 1)
+    yi = iy & (TABLE_N - 1)
+    h = P[P[xi] + yi]
+    return tuple(P[h + k].to(torch.float32) / float(TABLE_N) for k in range(4))
+
+
 def build_tables(seed: int, device) -> dict:
     """Build every hash table for a given seed, in pure Python integer
     arithmetic on CPU, then move to `device`. Spec 3.2.

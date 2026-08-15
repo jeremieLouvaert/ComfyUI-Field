@@ -1113,7 +1113,7 @@ def invariant_E9():
 
 
 def invariant_E10():
-    section("E10. loader: pack registers exactly 10 nodes under AKURATE/Fields/*")
+    section("E10. loader: registered nodes match the expected manifest (13 as of Phase 2a)")
     parent = os.path.dirname(REPO_ROOT)
     pkg_name = os.path.basename(REPO_ROOT)
     if parent not in sys.path:
@@ -1132,6 +1132,9 @@ def invariant_E10():
         "FieldFromImage":  "AKURATE/Fields/Derive",    # Phase 1 (c), spec 6
         "FieldFromEdges":  "AKURATE/Fields/Derive",    # Phase 1 (c), spec 7.1
         "FieldFromDetail": "AKURATE/Fields/Derive",    # Phase 1 (c), spec 7.2
+        "FieldGradient":   "AKURATE/Fields/Generate",  # Phase 2a
+        "FieldShape":      "AKURATE/Fields/Generate",  # Phase 2a
+        "FieldTile":       "AKURATE/Fields/Generate",  # Phase 2a
     }
     got = {k: getattr(cls, "CATEGORY", "") for k, cls in mappings.items()}
 
@@ -1139,7 +1142,8 @@ def invariant_E10():
     extra = sorted(set(got) - set(EXPECTED))
     check("E10: no expected node is missing", not missing, "missing=" + str(missing))
     check("E10: no unexpected node is registered", not extra, "extra=" + str(extra))
-    check("E10: exactly 10 nodes registered", len(got) == 10, "count=" + str(len(got)))
+    check("E10: node count matches the manifest", len(got) == len(EXPECTED),
+          "count=" + str(len(got)) + " manifest=" + str(len(EXPECTED)))
 
     wrong = sorted(k for k in EXPECTED if k in got and got[k] != EXPECTED[k])
     check("E10: every node registers under its specified family", not wrong,
