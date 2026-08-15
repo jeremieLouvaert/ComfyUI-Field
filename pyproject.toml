@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-field"
-description = "Resolution-independent procedural fields for driving and masking effects. Perlin, simplex, value and Worley noise as pure functions of normalised coordinates, with a probability-integral-transform coverage control; threshold, morphology, exact Euclidean distance and combine nodes for shaping them; fields derived from the image itself via luma, edges and local contrast; and a mask-driven compositor that makes any global effect spatially varying."
+description = "Resolution-independent procedural fields for driving and masking effects. Perlin, simplex, value and Worley noise as pure functions of normalised coordinates, with a probability-integral-transform coverage control; analytic gradients shaped by a draggable stops-ramp widget; exact SDF shapes, tile lattices and scattered stamps; threshold, morphology, exact Euclidean distance, warp and combine nodes for reshaping; fields derived from the image itself via luma, edges and local contrast; and a mask-driven compositor that makes any global effect spatially varying."
 version = "0.5.0"
 license = { file = "LICENSE" }
 dependencies = []

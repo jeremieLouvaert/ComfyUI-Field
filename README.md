@@ -1,17 +1,26 @@
 # ComfyUI-Field
 
-Procedural noise fields for ComfyUI: Perlin, simplex, value and Worley noise, generated as
-pure functions of position rather than pixel index. A field looks the same shape at any
-resolution and any aspect ratio, so a 512 preview and a 4K render show the same picture,
-just sampled more finely.
+Procedural fields for ComfyUI: noise (Perlin, simplex, value, Worley), analytic ramps,
+exact shapes, tile patterns and scattered stamps, all generated as pure functions of
+position rather than pixel index. A field looks the same shape at any resolution and any
+aspect ratio, so a 512 preview and a 4K render show the same picture, just sampled more
+finely.
 
-Ten nodes, all under `AKURATE/Fields/`. Procedural generation leads; image-derived fields
-are an additional source that composes with it.
+Fifteen nodes, all under `AKURATE/Fields/`. Procedural generation leads; image-derived
+fields are an additional source that composes with it.
 
 **Generate**
 
-- **Field Noise** (`Generate`): the generator. Five noise types, fBm octaves, and a
+- **Field Noise** (`Generate`): the noise generator. Five noise types, fBm octaves, and a
   `coverage` control that means the same thing regardless of type or settings.
+- **Field Gradient** (`Generate`): six analytic ramps (linear U/V, radial, diamond, box,
+  angular) shaped by a stops ramp with a draggable curve editor, the DCC ramp widget.
+- **Field Shape** (`Generate`): circle, rect, polygon, star as exact signed distance
+  fields. `size_x`/`size_y` are the drawn half-extents; typed size is drawn size.
+- **Field Tile** (`Generate`): checker, brick, herringbone and hex lattices with mortar,
+  per-cell height profiles and seeded per-cell jitter.
+- **Field Scatter** (`Generate`): one exact SDF stamp per lattice cell, with occupancy,
+  position, size, rotation and value jitter from a per-cell hash.
 
 **Shape and refine**
 
@@ -24,6 +33,8 @@ are an additional source that composes with it.
   signed. Measured to the contour, not to pixel centres.
 - **Field Morphology** (`Refine`): grow, shrink, feather, outline. The structuring element
   is an isotropy-solved octagon, not a square.
+- **Field Warp** (`Reshape`): displaces a mask along a fixed direction, along the slope of
+  a drive field, or by an iterated slope smear. Self-warps when no drive is wired.
 
 **Combine**
 
@@ -260,6 +271,112 @@ control.
 into smooth blobs that no longer track the texture they are supposed to be finding: 0.02 is
 a 32 pixel sigma and the content is already barely legible in the mask.
 
+## Field Gradient
+
+Six ramp geometries: `linear_u`, `linear_v`, `radial`, `diamond`, `box`, `angular`, each
+positioned by `center_x/center_y` and `rotation` (radial ignores rotation; a Euclidean
+distance is rotation-invariant). `repeat` tiles the ramp, `mirror` triangle-folds instead
+of hard-wrapping, `phase` slides it.
+
+The profile is a **stops ramp**, the control you know from Houdini or Substance: a strip
+that draws the evaluated curve, with draggable stop handles under it. Double-click adds a
+stop, dragging one out of the strip removes it, and each stop carries an interpolation for
+the segment to its right: `constant`, `linear`, or `smooth` (the quintic
+`6t^5 - 15t^4 + 10t^3`, for the same slope-continuity reason as Field Threshold). Two
+stops at the same position make a hard jump, and the later one wins from that position
+rightward. The JSON string under the canvas is the actual node input, so API workflows
+write the same thing the widget writes:
+
+```json
+{"version": 1, "stops": [{"p": 0.0, "v": 0.0, "i": "linear"},
+                          {"p": 1.0, "v": 1.0, "i": "linear"}]}
+```
+
+Validation is loud: malformed JSON, NaN, unknown interpolation names and stop counts
+outside 1..64 raise with the offending index named, rather than rendering something
+plausible from a bad string.
+
+Every hard edge this node can manufacture, a constant-stop cliff, the wrap seam at
+`repeat > 1`, the angular branch cut, is antialiased through the same coverage rule as
+Field Shape's contours, sized by `aa_width` and converted to ramp units through each
+mode's analytic gradient. At the identity settings (one linear segment, `repeat 1`, no
+phase, default centre) the node is a bitwise plain ramp with no blending anywhere.
+
+Honest limits: `angular` flattens a circular quantity into a linear mask, so it has an
+inherent seam at the branch cut, the same class of thing as Field From Image's `hue`; the
+seam renders as its correct one-pixel blend, not hidden. And a `constant` segment is a
+plateau, so `coverage` targets that land inside its mass step across it, the documented
+plateaus-are-atoms behaviour shared with every histogram method in this pack.
+
+## Field Shape
+
+One shape per node instance: `circle`, `rect`, `polygon` (3 to 12 sides), `star` (with
+`star_ratio`, inner over outer radius). All four are exact signed distance fields; the
+polygon and star come from an angle-fold plus distance-to-segment construction measured to
+4e-16 against a brute-force boundary, not from a max-of-half-planes approximation.
+
+`size_x` and `size_y` are the drawn half-extents along x and y before rotation, as a
+fraction of the longer frame edge. Typed size is drawn size for every shape: a polygon or
+star is normalised by its own bounding box, so `0.40/0.20` draws a shape that actually
+spans 0.40 by 0.20. The flip side: a *regular* n-gon has a non-square bounding box, so
+equal sizes draw a slightly stretched one. A regular hexagon is `size_x = 0.866 *
+size_y`; a regular pentagon `size_y = 0.951 * size_x`.
+
+`falloff` is the authored soft edge (quintic, in frame units); `aa_width` is the
+rasterisation width (linear, in pixels). They compose as widths, so antialiasing never
+blurs an authored edge and a wide falloff makes `aa_width` a no-op. `corner_radius`
+rounds the rect inside its requested extent.
+
+The third output, `sdf`, is the raw distance field in Field Distance's `both` convention:
+contour at exactly 0.5, positive inside, clamped at `sdf_range`. Field Threshold at its
+default recovers the mask from it, never the complement.
+
+Honest limits, all measured (the numbers are in `docs/field-phase2c-derivation.md`): hard
+edges hold to a 200:1 size ratio with no pixel wrong by more than a quarter level, but
+`falloff` and the `sdf` output ride a first-order distance correction that is accurate
+below about 4:1 and degrades gradually above it, worst near the tips of very elongated
+shapes. And a sharp tip (a triangle corner, a thin star point) loses a couple of pixels of
+rendered extent to pixel-centre quantisation; the geometry is exact, the raster can only
+show pixels whose centres it covers.
+
+## Field Tile
+
+Four lattices: `checker`, `brick` (with `row_offset`), `herringbone`, `hex`. `tiles`
+counts cells across the longer edge, so the pattern scale is resolution-independent like
+every other length here; `lock_square` keeps cells square, or `tiles_y` sets the vertical
+count separately (checker and brick only; herringbone and hex have fixed geometry
+ratios). `mortar` is the grout width.
+
+`profile` shapes each cell from its own SDF: `flat`, `pyramid`, `cone`, `gaussian`,
+`bevel`. This is what makes "pyramids" a per-cell profile rather than a separate pattern.
+Per-cell hash jitter (`jitter_size`, `jitter_offset`, `jitter_value`, driven by `seed`)
+varies cells independently and deterministically. Every cell edge goes through the exact
+box-filter coverage function, so tile edges antialias identically to shape contours.
+
+## Field Scatter
+
+A lattice of stamps: `density` cells across the longer edge, `fill` the probability a
+cell holds a stamp, and one exact SDF shape per occupied cell (the same four shapes as
+Field Shape, plus `stamp_aspect` on rect). `position_jitter`, `size_jitter`,
+`rotation_jitter` and `value_jitter` each draw from an independent per-cell hash channel,
+so turning one up never reshuffles another. Seeded and deterministic: the same settings
+always place the same stamps. `falloff` and `aa_width` behave exactly as on Field Shape.
+
+## Field Warp
+
+The pack's one pixels-move node: a pull-back warp of a MASK. `directional` displaces
+along a fixed `angle` by `amount` times the drive value; `vector` follows the smoothed
+drive's slope, frame-max normalised so `amount` means the same thing on any drive;
+`slope_blur` iterates the smear (`samples` steps, `max` to dilate, `min` to erode).
+`warp_source` is optional; leave it unwired and the field drives itself, which melts a
+mask along its own edges. `amount = 0` returns the input bitwise.
+
+Honest limits: this warps the rendered mask, not the coordinates, so the result is
+resolution-approximate rather than bitwise across sizes, and true coordinate-space domain
+warping (warping the noise before it is evaluated) is deliberately not in the pack yet.
+`slope_blur` with `mean` is a one-sided path average: it translates the mask by about
+half the smear length, it is not a symmetric blur.
+
 ## Notes for anyone extending this pack
 
 - **Know whether you are writing a generator or a filter.** A generator knows its own
@@ -296,7 +413,13 @@ a 32 pixel sigma and the content is already barely legible in the mask.
 python tools/test_field.py          # Phase 0: Field Noise / Remap / Composite
 python tools/test_phase1.py         # Field Threshold / Morphology / Combine
 python tools/test_phase1_derive.py  # Field Distance / From Image / From Edges / From Detail
+python tools/test_phase2a.py        # Field Gradient / Shape / Tile
+python tools/test_phase2b.py        # Field Warp / Scatter
+python tools/test_phase2c.py        # the size re-parameterization and the stops ramp
 ```
+
+As of v0.5.0 the seven suites (the six above plus `test_nodes.py`) hold 802 checks and
+129 negative controls, all passing and all firing on the build they ship with.
 
 Every invariant ships with a deliberately broken variant that has to fail, because a suite
 never seen to fail is not evidence. The suites report negative controls that stayed silent
@@ -320,11 +443,14 @@ published algorithm descriptions. Perlin's own reference implementation carries 
 header and no licence and was not used, and neither its permutation table nor anyone else's
 appears here.
 
-See `docs/field-noise-derivation.md` and `docs/field-phase1-derivation.md` for the full
-derivation and rationale behind every constant and convention in this pack. Both record the
-errors caught during their builds **in place** rather than editing them out, because each one
-produced a plausible number rather than a crash: an asymmetric range bound, a `scale` applied
-twice, an offset precision failure, an isotropy figure that was wrong in both sign and
-magnitude, two edge-operator measurements that were reading a padding artifact, a blend
-formula chosen for elegance over exactness, and a propagation whose iteration count turned
-out to scale with resolution.
+See the `docs/` derivation documents (`field-noise-derivation.md`, `field-phase1-derivation.md`,
+`field-phase2a-derivation.md`, `field-phase2b-derivation.md`, `field-phase2c-derivation.md`)
+for the full derivation and rationale behind every constant and convention in this pack. All
+five record the errors caught during their builds **in place** rather than editing them out,
+because each one produced a plausible number rather than a crash: an asymmetric range bound, a
+`scale` applied twice, an isotropy figure that was wrong in both sign and magnitude, a star
+formula that drew a 94%-of-frame blob with its centre outside the shape, six acceptance tests
+a correct build would have failed, an unbounded warp mode that displaced by 1969 pixels, and a
+"bitwise equivalent" claim that held on the three sampled cases and failed on eleven others.
+The 2a and 2c documents also carry the records of their adversarial review passes, where a
+second set of eyes attacked the specification before any code was written against it.
