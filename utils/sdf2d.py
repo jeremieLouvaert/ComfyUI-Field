@@ -104,7 +104,7 @@ def sdf_rect_rounded(px, py, hx, hy, corner_radius):
 # Spec 4.1. One construction, exact to ~4e-16 against a brute-force polyline.
 # ---------------------------------------------------------------------------
 
-def invert_star_ratio(n_sides, star_ratio):
+def invert_star_ratio(n_sides, star_ratio, prefix="[FieldShape]"):
     """Spec 4.1 closed form: star_ratio = cos(pi/n) - sin(pi/n)*cot(pi/m).
     Inverted numerically ONCE per execute on the CPU scalar via deterministic
     bisection (m in [2, n], ratio_of(m) strictly decreasing).
@@ -119,6 +119,11 @@ def invert_star_ratio(n_sides, star_ratio):
     achievable range and print a note, rather than raising or silently
     guessing a different formula.
 
+    prefix: Field Phase 2b spec 0 -- printed-note prefix, so a caller other
+    than Field Shape (Field Scatter passes "[FieldScatter]") prints its own
+    node name. Default "[FieldShape]" keeps 2a's behaviour, including its
+    printed text, bitwise unchanged.
+
     Returns (m, effective_star_ratio_used).
     """
     an = math.pi / n_sides
@@ -128,7 +133,7 @@ def invert_star_ratio(n_sides, star_ratio):
     hi_r = max(max_ratio - eps, eps)
     t = min(max(star_ratio, lo_r), hi_r)
     if abs(t - star_ratio) > 1e-9:
-        print(f"[FieldShape] star_ratio {star_ratio:.4f} is unreachable at "
+        print(f"{prefix} star_ratio {star_ratio:.4f} is unreachable at "
               f"sides={n_sides} (achievable range is ({lo_r:.4f}, {hi_r:.4f}], "
               f"max = cos(pi/sides) = {max_ratio:.4f}); clamped to {t:.4f}")
 

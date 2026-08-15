@@ -11,6 +11,8 @@ from .field_from_detail import FieldFromDetail
 from .field_gradient import FieldGradient
 from .field_shape import FieldShape
 from .field_tile import FieldTile
+from .field_warp import FieldWarp
+from .field_scatter import FieldScatter
 
 NODE_CLASS_MAPPINGS = {
     # Phase 0
@@ -31,6 +33,9 @@ NODE_CLASS_MAPPINGS = {
     "FieldGradient": FieldGradient,
     "FieldShape": FieldShape,
     "FieldTile": FieldTile,
+    # Phase 2b, warp + scatter
+    "FieldWarp": FieldWarp,
+    "FieldScatter": FieldScatter,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -47,4 +52,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FieldGradient": "Field Gradient",
     "FieldShape": "Field Shape",
     "FieldTile": "Field Tile",
+    "FieldWarp": "Field Warp",
+    "FieldScatter": "Field Scatter",
 }

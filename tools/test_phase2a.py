@@ -2127,10 +2127,14 @@ def row23_loader():
         "FieldDistance", "FieldFromImage", "FieldFromEdges", "FieldFromDetail",
     }
     EXPECTED_2A = {"FieldGradient", "FieldShape", "FieldTile"}
-    EXPECTED = EXPECTED_PHASE01 | EXPECTED_2A
+    # Updated 2026-08-15 for Phase 2b, the same maintenance as the 10 -> 13
+    # transition: the manifest is the assertion, the count follows it.
+    EXPECTED_2B = {"FieldWarp", "FieldScatter"}
+    EXPECTED = EXPECTED_PHASE01 | EXPECTED_2A | EXPECTED_2B
 
     got = set(mappings.keys())
-    check("exactly 13 nodes registered", len(got) == 13, "got " + str(len(got)) + ": " + str(sorted(got)))
+    check("node count matches the manifest", len(got) == len(EXPECTED),
+          "got " + str(len(got)) + " manifest " + str(len(EXPECTED)) + ": " + str(sorted(got)))
     missing = sorted(EXPECTED - got)
     extra = sorted(got - EXPECTED)
     check("no expected node is missing", not missing, "missing=" + str(missing))

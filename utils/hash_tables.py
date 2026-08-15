@@ -136,20 +136,33 @@ def _build_oct_off(seed: int) -> list:
     return out
 
 
-def cell_hash4(P, ix, iy):
-    """Field Phase 2a spec 5.3: the public per-cell hash, added here without
-    touching anything existing. h = P[P[ix&4095]+(iy&4095)]; h_k = P[h+k] for
-    channel k in {0,1,2,3} (size, offset_x, offset_y, value); u_k = h_k/4096.
+def cell_hashn(P, ix, iy, n):
+    """Field Phase 2b spec 0: generalises cell_hash4 to n <= 8 channels.
+    h = P[P[ix&4095]+(iy&4095)]; h_k = P[h+k] for channel k in 0..n-1;
+    u_k = h_k/4096.
 
     ix, iy: int64 tensors, any shape, already the (possibly shifted, per
     pattern) cell index. P: the doubled 8192-entry permutation from
-    build_tables(). h <= 4095 and k <= 3, so P[h+k] is always in range with
-    no second mask (spec 5.3). Returns (u0, u1, u2, u3), float32 tensors
-    uniform in [0, 1)."""
+    build_tables(). h <= 4095 and k <= 7, so P[h+k] always stays inside the
+    doubled 8192-entry table for every k <= 7 -- an exact table property
+    (verified, spec 0), not a heuristic, so n <= 8 needs no second mask.
+    Returns a tuple of n float32 tensors uniform in [0, 1)."""
+    assert 1 <= n <= 8, f"cell_hashn: n must be in [1, 8], got {n}"
     xi = ix & (TABLE_N - 1)
     yi = iy & (TABLE_N - 1)
     h = P[P[xi] + yi]
-    return tuple(P[h + k].to(torch.float32) / float(TABLE_N) for k in range(4))
+    return tuple(P[h + k].to(torch.float32) / float(TABLE_N) for k in range(n))
+
+
+def cell_hash4(P, ix, iy):
+    """Field Phase 2a spec 5.3: the public per-cell hash. Now a thin wrapper
+    over cell_hashn(P, ix, iy, 4) (Field Phase 2b spec 0) -- bit-identical to
+    the original standalone body (same P[P[xi]+yi] shape, same k in
+    {0,1,2,3}, same /4096 division), kept as its own name since field_tile.py
+    and the 2a suite already spell it this way. Channels: size, offset_x,
+    offset_y, value. Returns (u0, u1, u2, u3), float32 tensors uniform in
+    [0, 1)."""
+    return cell_hashn(P, ix, iy, 4)
 
 
 def build_tables(seed: int, device) -> dict:

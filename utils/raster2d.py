@@ -152,3 +152,26 @@ def profile_value(profile, rho, r_n, profile_width):
         pw_safe = max(profile_width, 1e-6)
         return torch.clamp(rho / pw_safe, 0.0, 1.0)
     raise ValueError(f"[Field] unknown profile: {profile}")
+
+
+# ---------------------------------------------------------------------------
+# Field Phase 2b spec 2.1 / 2.6 (S5a) -- Field Scatter's combine step.
+# ---------------------------------------------------------------------------
+
+def combine_max(candidates):
+    """Field Scatter's 3x3-neighbourhood combine: an elementwise max over
+    each neighbour cell's stamp contribution. A DECLARED SEAM (spec 2.6,
+    S5a): the white-box teeth call this function directly to assert
+    permutation invariance of max over the 9 (or (2n+1)^2, per the
+    `_neighborhood` test seam) candidates, without going through the whole
+    node -- S4's determinism means a fixed build produces exactly one
+    bitwise order, so a black-box permutation test on the node's OUTPUT is
+    impossible; this is what makes the property observable at all.
+
+    candidates: a non-empty list/tuple of same-shape float tensors, one per
+    neighbour cell. Order-independent by construction (max is commutative
+    and associative). Returns their elementwise maximum."""
+    out = candidates[0]
+    for c in candidates[1:]:
+        out = torch.maximum(out, c)
+    return out

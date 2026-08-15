@@ -145,6 +145,8 @@ def invariant_21():
         "FieldGradient":   "AKURATE/Fields/Generate",   # Phase 2a
         "FieldShape":      "AKURATE/Fields/Generate",   # Phase 2a
         "FieldTile":       "AKURATE/Fields/Generate",   # Phase 2a
+        "FieldWarp":       "AKURATE/Fields/Reshape",    # Phase 2b
+        "FieldScatter":    "AKURATE/Fields/Generate",   # Phase 2b
     }
     got = {k: getattr(cls, "CATEGORY", "") for k, cls in mappings.items()}
 
