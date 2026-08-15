@@ -215,9 +215,9 @@ which returns unspecified values on an input with no background.
 
 ## Field From Image / From Edges / From Detail
 
-Fields derived from the picture, so an effect can follow the content. They are an additional
-source, not the pack's identity: multiply one by a Perlin field with Field Combine when the
-effect should respond to both.
+Fields derived from the picture, so an effect can follow the content. Procedural generation
+is still the pack's core; these add to it, e.g. multiply one by a Perlin field with Field
+Combine when the effect should respond to both.
 
 All three share Field Noise's `distribution` control (`uniform` applies the rank transform so
 `coverage` is exact, `native` maps the raw quantity through its own declared range) and its
