@@ -1,5 +1,7 @@
 # ComfyUI-Field
 
+![ComfyUI-Field](assets/hero.jpg)
+
 Procedural fields for ComfyUI: noise (Perlin, simplex, value, Worley), analytic ramps,
 exact shapes, tile patterns and scattered stamps, all generated as pure functions of
 position rather than pixel index. A field looks the same shape at any resolution and any
