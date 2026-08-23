@@ -2,7 +2,8 @@
 Field Scatter: jittered point-scatter of an exact-SDF stamp on a square
 lattice, 6-channel per-cell hash, 3x3-neighbourhood gather, max combine.
 
-Spec: docs/field-phase2b-derivation.md, section 2.
+Spec: docs/field-phase2b-derivation.md, section 2; fill_mask placement
+modulation per docs/field-scatter-mask-derivation.md.
 
 A GENERATOR (section 0): elementwise ops and gathers only in the field path
 -- no matmul, no grid_sample, no spatial reductions. The gathered per-cell
@@ -82,6 +83,43 @@ def _reach_cap(shape, size, cell, stamp_aspect, rotation, rotation_jitter,
 
 
 # ---------------------------------------------------------------------------
+# fill_mask I/O prep and per-cell gather.
+# Spec: docs/field-scatter-mask-derivation.md section 3 (prep, run once per
+# execute) and section 1a (the containing-pixel read, a pure function of
+# (nix, niy) shared by the output pass and the PIT probe pass).
+# ---------------------------------------------------------------------------
+
+def _prep_mask(mask, device, mask_min):
+    """reshape(-1,Hm,Wm) -> frame guard -> nan_to_num -> clamp -> device/f32.
+    Returns an (Hm, Wm) float32 tensor, or None (fill_mask treated absent)."""
+    t = mask.reshape((-1,) + tuple(mask.shape[-2:]))
+    if t.shape[0] == 0:
+        print("[FieldScatter] empty fill_mask batch, treating as absent")
+        return None
+    if t.shape[0] > 1:
+        print(f"[FieldScatter] fill_mask batch {t.shape[0]} frames, using frame 0")
+    t = t[0].to(device=device, dtype=torch.float32)
+    t = torch.nan_to_num(t, nan=0.0).clamp(0.0, 1.0)
+    if float(t.max()) == 0.0 and mask_min == 0.0:
+        print("[FieldScatter] fill_mask is entirely zero at mask_min 0: no stamps "
+              "will be placed (an alpha-less LoadImage mask does this)")
+    return t
+
+
+def _gather_mask_cell(nix, niy, cell, mask, win_w, win_h):
+    """Section 1a: containing-pixel read at the UNJITTERED cell centre,
+    native mask resolution, floor-then-clamp (never round) indices, halo
+    cells clamped to the edge (border-replicate). Pure function of
+    (nix, niy) -- no interpolation, no resize."""
+    Hm, Wm = mask.shape
+    ncx = (nix.to(torch.float32) + 0.5) * cell
+    ncy = (niy.to(torch.float32) + 0.5) * cell
+    jx = torch.floor(ncx / win_w * Wm).to(torch.int64).clamp(0, Wm - 1)
+    jy = torch.floor(ncy / win_h * Hm).to(torch.int64).clamp(0, Hm - 1)
+    return mask[jy, jx]
+
+
+# ---------------------------------------------------------------------------
 # 2.2 / 2.3 -- per-instance parameters from the 6-channel hash, and the
 # per-pixel evaluation of a single neighbour cell's stamp.
 # Channels (spec 2.1, BINDING order -- the blind teeth recompute stamp
@@ -96,7 +134,20 @@ def _stamp_contribution(px, py, nix, niy, cell, params, P, S):
     # Spec 2.3 pin 3: unoccupied cells contribute exactly 0. presence is a
     # hard 0/1 gate (fill 0 -> never occupied; fill 1 -> always, since
     # u0 in [0,1) is always < 1.0).
-    presence = (u0 < params["fill"]).to(px.dtype)
+    # mask-derivation section 1/section 7#1: fill_mask=None runs the
+    # shipped scalar compare VERBATIM (structural bitwise absence); a wired
+    # mask scales the threshold instead (never a per-pixel gate).
+    mask = params["mask"]
+    if mask is None:
+        presence = (u0 < params["fill"]).to(px.dtype)
+    else:
+        m = _gather_mask_cell(nix, niy, cell, mask, params["win_w"], params["win_h"])
+        gamma = params["mask_gamma"]
+        mg = m if gamma == 1.0 else torch.pow(m, gamma)  # gamma==1.0 skips pow structurally
+        mask_min = params["mask_min"]
+        m_eff = mask_min + (1.0 - mask_min) * mg  # op order: clamp (in prep) -> gamma -> floor
+        fill_eff = params["fill"] * m_eff
+        presence = (u0 < fill_eff).to(px.dtype)
 
     ncx = (nix.to(torch.float32) + 0.5) * cell
     ncy = (niy.to(torch.float32) + 0.5) * cell
@@ -259,7 +310,7 @@ class FieldScatter:
                 }),
                 "seed": ("INT", {
                     "default": 0, "min": 0, "max": 0xFFFFFFFF, "control_after_generate": True,
-                    "tooltip": "Active when 0 < fill < 1 or any jitter > 0"
+                    "tooltip": "Active when 0 < fill < 1, any jitter > 0, or fill_mask is wired"
                 }),
                 "distribution": (["native", "uniform"], {
                     "default": "native",
@@ -281,7 +332,33 @@ class FieldScatter:
                                "width/height widgets are ignored"
                 }),
                 "reference_mask": ("MASK", {
-                    "tooltip": "As reference_image, lower priority if both are wired"
+                    "tooltip": "As reference_image, lower priority if both are wired. "
+                               "SIZE-ONLY: supplies H/W/batch/device and never touches the "
+                               "field -- use fill_mask to modulate placement."
+                }),
+                "fill_mask": ("MASK", {
+                    "tooltip": "Spatially modulates PLACEMENT probability: effective fill = "
+                               "fill × (mask_min + (1−mask_min)·m^mask_gamma), "
+                               "read once per lattice cell at the cell's centre. White = full "
+                               "fill, black = mask_min×fill (0 = no stamps). Stamps land "
+                               "whole or not at all: edges are honoured at cell resolution and "
+                               "stamps can overhang by their own reach -- keep mask features at "
+                               "least two cells wide. With distribution=uniform the masked-out "
+                               "area is remapped to a mid-grey, not black (the PIT ranks the "
+                               "whole frame). Frame 0 used for batches. NOT the same as "
+                               "reference_mask, which only supplies size/batch/device."
+                }),
+                "mask_min": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Placement floor where fill_mask is black. 0 = thin out to "
+                               "nothing; raise it to keep some stamps everywhere (the slice-3 "
+                               "floor-not-gate taste). Only active when fill_mask is wired."
+                }),
+                "mask_gamma": ("FLOAT", {
+                    "default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05,
+                    "tooltip": "Contrast curve on fill_mask before the floor. 1.0 = linear "
+                               "(skips the op entirely); >1 pulls feathered mid-greys toward "
+                               "the floor. Only active when fill_mask is wired."
                 }),
             },
         }
@@ -295,7 +372,8 @@ class FieldScatter:
                 rotation, rotation_jitter, fill, size_jitter, position_jitter,
                 value_jitter, falloff, aa_width, seed, distribution,
                 coverage, invert, width, height,
-                reference_image=None, reference_mask=None, _neighborhood=1):
+                reference_image=None, reference_mask=None,
+                fill_mask=None, mask_min=0.0, mask_gamma=1.0, _neighborhood=1):
         # _neighborhood: spec 2.1 TEST SEAM, an execute-level kwarg, NOT a
         # ComfyUI widget (not declared in INPUT_TYPES, so the node graph
         # never passes it and the default of 1 -- the real 3x3 -- always
@@ -328,6 +406,13 @@ class FieldScatter:
         tables = hash_tables.build_tables(seed, device)
         P = tables["P"]
 
+        # mask-derivation section 7#2/#4: fill_mask=None skips everything --
+        # no prep, no gather, no remap. Prepped once per execute, never
+        # per-cell (section 3).
+        mask_prepped = None
+        if fill_mask is not None:
+            mask_prepped = _prep_mask(fill_mask, device, mask_min)
+
         params = {
             "shape": shape, "cell": cell, "size_capped": size_capped,
             "sides": sides, "m": m_val, "stamp_aspect": stamp_aspect,
@@ -335,6 +420,8 @@ class FieldScatter:
             "fill": fill, "size_jitter": size_jitter, "position_jitter": position_jitter,
             "value_jitter": value_jitter,
             "falloff": falloff, "aa_width": aa_width,
+            "mask": mask_prepped, "mask_min": float(mask_min), "mask_gamma": float(mask_gamma),
+            "win_w": win_w, "win_h": win_h,
         }
 
         # Spec 2.6 S12: binary requires falloff=0 AND value_jitter=0 AND
