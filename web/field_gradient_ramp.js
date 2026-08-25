@@ -101,7 +101,10 @@ function createRampWidget(node, stringWidget) {
     name: "ramp_canvas",
     type: "custom",
     value: "",
-    options: { serialize: false }, // mirrors the STRING widget; never its own saved value
+    // Deliberately NOT a LiteGraph widget and NOT in node.widgets. See
+    // attachRampWidget() for why -- `options.serialize` does not do what
+    // this line originally assumed.
+    options: { serialize: false },
 
     // parsed state
     stops: [],
@@ -170,10 +173,12 @@ function createRampWidget(node, stringWidget) {
     // call mid-drag without invalidating this.dragIndex.
     buildEnvelope() {
       const sorted = sortStopsCopy(this.stops);
-      const outStops = sorted.map((s) => {
-        const { _order, ...rest } = s;
-        return { ...rest, p: round4(s.p), v: round4(s.v), i: s.i };
-      });
+      // WHITELIST the schema fields. The old spread blacklisted only _order,
+      // so the widget internals _chipRect and _handlePos leaked into the saved
+      // JSON that utils/ramp.py parses, bloating every workflow. The stop
+      // schema is exactly {p, v, i}; the envelope keeps its own extra keys via
+      // the ...base spread below.
+      const outStops = sorted.map((s) => ({ p: round4(s.p), v: round4(s.v), i: s.i }));
       const base = this.envelope || {};
       return {
         ...base,
@@ -492,6 +497,16 @@ function createRampWidget(node, stringWidget) {
 
 // --- attach to the node ---------------------------------------------------
 
+// onDrawForeground draws from the node BODY origin, which is also where
+// LiteGraph lays out the socket rows. Modern ComfyUI lists every widget in
+// node.inputs too, so count only inputs WITHOUT a `.widget` back-reference.
+function topY(node) {
+  const socketIns = (node.inputs || []).filter((i) => !i.widget).length;
+  const rows = Math.max(socketIns, node.outputs ? node.outputs.length : 0);
+  const slotH = (typeof LiteGraph !== "undefined" && LiteGraph.NODE_SLOT_HEIGHT) || 20;
+  return rows * slotH + 6;
+}
+
 function attachRampWidget(node) {
   const stringWidget = node.widgets?.find((w) => w.name === "ramp");
   if (!stringWidget) {
@@ -502,22 +517,70 @@ function attachRampWidget(node) {
   node._fieldGradientRampAttached = true;
 
   const widget = createRampWidget(node, stringWidget);
-  node.addCustomWidget(widget);
+  node._fieldGradientRamp = widget;
   widget.reparse();
 
-  // Place the canvas widget directly ABOVE the STRING widget (which stays
-  // visible below it as the manual-JSON-paste escape hatch).
-  const stringIdx0 = node.widgets.indexOf(stringWidget);
-  const widgetIdx0 = node.widgets.indexOf(widget);
-  if (widgetIdx0 !== -1 && stringIdx0 !== -1 && widgetIdx0 !== stringIdx0 - 1) {
-    node.widgets.splice(widgetIdx0, 1);
-    const stringIdx1 = node.widgets.indexOf(stringWidget);
-    node.widgets.splice(stringIdx1, 0, widget);
-  }
+  // The canvas is deliberately kept OUT of node.widgets.
+  //
+  // It used to be added with addCustomWidget and spliced above the STRING
+  // widget, carrying only `options: {serialize: false}`. That flag is NOT
+  // consulted by configure(), so LiteGraph persisted the canvas as '' and it
+  // consumed widgets_values slot 4. Save writes vals[i] BY INDEX skipping
+  // serialize===false widgets; load reads vals[t++] SEQUENTIALLY with the same
+  // skip. Those two agree only when the non-serialised widget is LAST, so any
+  // 14-value array (what the 14 declared Python widgets produce) loaded with
+  // `ramp` through `height` shifted one slot. Measured 2026-08-24.
+  //
+  // Staying out of the array makes widgets_values match the declared inputs
+  // exactly. Space is reserved with `widgets_start_y`, which means the ramp
+  // editor now sits at the TOP of the node rather than immediately above its
+  // JSON field. The STRING widget remains the manual-paste escape hatch.
+  const reserve = () => {
+    const h = widget.computeSize(node.size ? node.size[0] : 300)[1];
+    node.widgets_start_y = topY(node) + h;
+  };
+  reserve();
 
-  // Re-sync the canvas whenever the STRING widget changes directly -- via
-  // its callback (fires on committed edits) and its textarea's own `input`
-  // event (fires live, for multiline widgets that expose .inputEl).
+  const origDraw = node.onDrawForeground;
+  node.onDrawForeground = function (ctx, canvas) {
+    const r = origDraw ? origDraw.apply(this, arguments) : undefined;
+    if (this.flags && this.flags.collapsed) return r;
+    reserve();
+    widget.draw(ctx, this, this.size[0], topY(this), 0);
+    return r;
+  };
+
+  const origDown = node.onMouseDown;
+  node.onMouseDown = function (e, pos, canvas) {
+    if (widget.mouse({ type: "pointerdown", shiftKey: !!(e && e.shiftKey) }, pos, this)) {
+      if (typeof this.captureInput === "function") this.captureInput(true);
+      return true;
+    }
+    return origDown ? origDown.apply(this, arguments) : false;
+  };
+
+  const origMove = node.onMouseMove;
+  node.onMouseMove = function (e, pos, canvas) {
+    if (widget.dragIndex !== -1) {
+      widget.mouse({ type: "pointermove", shiftKey: !!(e && e.shiftKey) }, pos, this);
+      return true;
+    }
+    return origMove ? origMove.apply(this, arguments) : undefined;
+  };
+
+  const origUp = node.onMouseUp;
+  node.onMouseUp = function (e, pos, canvas) {
+    if (widget.dragIndex !== -1) {
+      widget.mouse({ type: "pointerup", shiftKey: !!(e && e.shiftKey) }, pos, this);
+      if (typeof this.captureInput === "function") this.captureInput(false);
+      return true;
+    }
+    return origUp ? origUp.apply(this, arguments) : undefined;
+  };
+
+  // Re-sync the canvas whenever the STRING widget changes directly -- via its
+  // callback (fires on committed edits) and its textarea's own `input` event
+  // (fires live, for multiline widgets that expose .inputEl).
   const origCallback = stringWidget.callback;
   stringWidget.callback = function (value, ...rest) {
     const out = origCallback ? origCallback.apply(this, [value, ...rest]) : undefined;
@@ -540,13 +603,54 @@ function attachRampWidget(node) {
   // onNodeCreated returns -- retry once on the next frame.
   setTimeout(hookInputEl, 0);
 
+  try {
+    const need = node.computeSize();
+    node.setSize([
+      Math.max(node.size[0] || 0, need[0]),
+      Math.max(node.size[1] || 0, need[1]),
+    ]);
+  } catch (e) {
+    console.warn("[FieldGradient] ramp resize failed", e);
+  }
+
   node.setDirtyCanvas(true, true);
 }
+
+// The index the canvas used to occupy in widgets_values back when it was a
+// real LiteGraph widget (spliced directly above the `ramp` STRING widget).
+const LEGACY_CANVAS_INDEX = 4;
 
 app.registerExtension({
   name: "AKURATE.FieldGradientRamp",
   async beforeRegisterNodeDef(nodeType, nodeData, _app) {
     if (nodeData.name !== "FieldGradient") return;
+
+    // MIGRATION. Workflows saved by v0.5.0/v0.6.0 carry an extra slot at index
+    // 4 holding the canvas's placeholder '' (or null). Now that the canvas is
+    // no longer a widget, those arrays are one longer than the widget list and
+    // would load shifted. Strip that slot before LiteGraph applies values.
+    // configure() applies widgets_values and only THEN calls onConfigure, so
+    // onConfigure is too late -- this has to wrap configure itself.
+    const origConfigure = nodeType.prototype.configure;
+    nodeType.prototype.configure = function (info) {
+      try {
+        const wv = info && info.widgets_values;
+        const declared = (this.widgets || []).length;
+        if (
+          Array.isArray(wv) &&
+          declared > 0 &&
+          wv.length === declared + 1 &&
+          (wv[LEGACY_CANVAS_INDEX] === "" || wv[LEGACY_CANVAS_INDEX] == null)
+        ) {
+          wv.splice(LEGACY_CANVAS_INDEX, 1);
+          console.log("[FieldGradient] migrated a legacy widgets_values (dropped the stale ramp_canvas slot)");
+        }
+      } catch (e) {
+        console.warn("[FieldGradient] widgets_values migration skipped", e);
+      }
+      return origConfigure ? origConfigure.apply(this, arguments) : undefined;
+    };
+
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = origOnNodeCreated ? origOnNodeCreated.apply(this, arguments) : undefined;
