@@ -947,7 +947,9 @@ def rowW9_slope_mode_mean_shift():
                 step = (amount / samples) * float(gi) * sgn
                 px = px - step * uxi * S2
                 py = py - step * uyi * S2
-            acc_x += float(px); acc_y += float(py); wsum += 1
+            acc_x += float(px)
+            acc_y += float(py)
+            wsum += 1
         return math.hypot(acc_x / wsum - float(px0), acc_y / wsum - float(py0))
 
     sym_shift = symmetric_two_sided_shift(field_dot[0], warp_source[0], amount, samples, x0, y0)

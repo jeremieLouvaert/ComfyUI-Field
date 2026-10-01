@@ -294,7 +294,8 @@ def patch_aspect_correct_disabled():
 
 def bilinear_sample(img2d, x, y):
     H, W = img2d.shape
-    x0 = math.floor(x); y0 = math.floor(y)
+    x0 = math.floor(x)
+    y0 = math.floor(y)
     x1, y1 = x0 + 1, y0 + 1
     fx, fy = x - x0, y - y0
 
@@ -303,8 +304,10 @@ def bilinear_sample(img2d, x, y):
 
     x0c, x1c = clampi(x0, 0, W - 1), clampi(x1, 0, W - 1)
     y0c, y1c = clampi(y0, 0, H - 1), clampi(y1, 0, H - 1)
-    v00 = float(img2d[y0c, x0c]); v01 = float(img2d[y0c, x1c])
-    v10 = float(img2d[y1c, x0c]); v11 = float(img2d[y1c, x1c])
+    v00 = float(img2d[y0c, x0c])
+    v01 = float(img2d[y0c, x1c])
+    v10 = float(img2d[y1c, x0c])
+    v11 = float(img2d[y1c, x1c])
     v0 = v00 * (1 - fx) + v01 * fx
     v1 = v10 * (1 - fx) + v11 * fx
     return v0 * (1 - fy) + v1 * fy
